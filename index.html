@@ -1628,6 +1628,8 @@ const onl={ peer:null, isHost:false, code:"", myId:"", myName:"", hostConn:null,
   players:[], phase:"off", drawerId:"", word:"", timeTotal:90, timeLeft:0, timer:null,
   dispTimer:null, turnEndAt:0, turnIdx:0, rounds:2, totalTurns:0, over:false,
   cat:"todas", usedWords:[], autoNext:null, board:null, joinTimeout:null,
+  joinRetry:null, joinWatch:null,
+  probeTimer:null, probePeer:null, probeActive:false, lastRereg:0,
   lobbyTimer:null, _pendingLeave:null };
 
 /* ---------- transmisión de trazos (solo actúa quien dibuja) ---------- */
@@ -1726,35 +1728,127 @@ function guardPeer(peer){
     setTimeout(retry, 800);
   });
 }
+/* ---------- re-registro forzado del anfitrión (mismo código) ----------
+   Cuando el broker da de baja la sala en silencio (ver la sonda), no basta
+   con esperar: se desconecta el peer a propósito para que el guardián
+   (guardPeer) lo reconecte con el MISMO ID, con un tryReconnectPeer de
+   respaldo a los 1,5 s. Se limita a una vez cada 5 s para no entrar en
+   bucle si el broker sigue fallando. */
+function forceReregisterHost(){
+  const peer=onl.peer;
+  if(!peer || peer.destroyed || !onl.isHost) return;
+  const now=Date.now();
+  if(now-(onl.lastRereg||0)<5000) return;
+  onl.lastRereg=now;
+  try{ peer.disconnect(); }catch(e){}
+  setTimeout(()=>{ if(onl.peer===peer) tryReconnectPeer(peer); }, 1500);
+}
+/* ---------- sonda de sala viva (anfitrión, solo en el lobby) ----------
+   La caída que guardPeer vigila NO es la única: si la pestaña del
+   anfitrión pasa a segundo plano, el navegador estrangula sus
+   temporizadores, el heartbeat de PeerJS deja de llegar y el broker borra
+   la sala tras su tiempo de inactividad… sin avisar al cliente:
+   peer.disconnected queda en false y la pantalla sigue mostrando
+   "Esperando jugadores…" sobre una sala fantasma. La única forma de
+   saberlo es comprobar desde fuera: cada 20 s se crea un peer temporal
+   que intenta conectar al ID de la sala (sin enviar "hello", así que no
+   se añade como jugador). Si su conexión abre en menos de 6 s, la sala
+   vive; si recibe "peer-unavailable" o no abre en 6 s, la sala murió y se
+   fuerza el re-registro con el mismo código. */
+function stopHostProbe(){
+  clearTimeout(onl.probeTimer); onl.probeTimer=null;
+  onl.probeActive=false;
+  if(onl.probePeer){ try{ onl.probePeer.destroy(); }catch(e){} onl.probePeer=null; }
+}
+function scheduleHostProbe(ms){
+  clearTimeout(onl.probeTimer); onl.probeTimer=null;
+  if(!onl.isHost || onl.phase!=="lobby" || !onl.peer || onl.peer.destroyed) return;
+  onl.probeTimer=setTimeout(runHostProbe, ms);
+}
+function runHostProbe(){
+  if(!onl.isHost || onl.phase!=="lobby" || !onl.peer || onl.peer.destroyed) return;
+  if(onl.probeActive) return;
+  if(typeof Peer==="undefined") return;
+  onl.probeActive=true;
+  const hostPeer=onl.peer;
+  const probe=new Peer();
+  onl.probePeer=probe;
+  let settled=false;
+  const finish=(alive)=>{
+    if(settled) return;
+    settled=true;
+    clearTimeout(watchdog);
+    try{ probe.destroy(); }catch(e){}
+    if(onl.probePeer===probe) onl.probePeer=null;
+    onl.probeActive=false;
+    if(onl.peer!==hostPeer || !onl.isHost || onl.phase!=="lobby") return;
+    if(alive){
+      scheduleHostProbe(20000);
+    } else {
+      onlSetRoomStatus("Reconectando la sala…");
+      forceReregisterHost();
+      scheduleHostProbe(20000);
+    }
+  };
+  const watchdog=setTimeout(()=>finish(false), 6000);
+  probe.on("open", ()=>{
+    const c=probe.connect(PEER_PREFIX+onl.code.toLowerCase(), {reliable:true});
+    c.on("open", ()=>finish(true));
+    c.on("error", ()=>finish(false));
+    c.on("close", ()=>finish(false));
+  });
+  probe.on("error", err=>{
+    if(err && err.type==="peer-unavailable") finish(false);
+  });
+}
 $("#onlCreate").addEventListener("click",()=>{
   if(!peerAvailable()) return;
   sfx.click();
   if(onl.peer){ try{ onl.peer.destroy(); }catch(e){} onl.peer=null; }
   onl.myName=readMyName();
   onlSetStatus("Creando tu sala…");
-  let attempts=0;
+  let attempts=0, roomReady=false;
   const tryCreate=()=>{
     attempts++;
     onl.code=randCode();
     const peer=new Peer(PEER_PREFIX+onl.code.toLowerCase());
     onl.peer=peer;
     peer.on("open", id=>{
-      onl.myId=id; onl.isHost=true; onl.conns={};
-      onl.players=[{id:id, name:onl.myName, color:PLAYER_COLORS[0], score:0}];
-      onl.phase="lobby";
-      enterRoomUI();
-      toast("Sala creada 🎉 Comparte el código "+onl.code);
+      if(onl.peer!==peer) return;
+      onl.myId=id; onl.isHost=true;
+      if(!roomReady){
+        /* Primera apertura: se inicializa la sala. */
+        roomReady=true;
+        onl.conns={};
+        onl.players=[{id:id, name:onl.myName, color:PLAYER_COLORS[0], score:0}];
+        onl.phase="lobby";
+        enterRoomUI();
+        toast("Sala creada 🎉 Comparte el código "+onl.code);
+        scheduleHostProbe(20000);
+      } else if(onl.phase==="lobby"){
+        /* Re-apertura tras un re-registro (sonda o error fatal): la sala
+           sigue siendo la misma; NO se reinician jugadores ni fase, solo
+           se confirma la reconexión. */
+        onlSetRoomStatus("Sala reconectada ✓, código "+onl.code);
+        scheduleHostProbe(20000);
+      }
     });
     guardPeer(peer);
     peer.on("connection", conn=>wireGuestConn(conn));
     peer.on("error", err=>{
+      if(onl.peer!==peer) return;
       if(err && err.type==="unavailable-id" && attempts<6 && onl.phase==="off"){
         try{ peer.destroy(); }catch(e){}
         tryCreate();
       } else if(onl.phase==="off") {
-        /* Solo se reporta en el formulario de entrada; si la sala ya está
-           abierta, los errores de señalización los cura guardPeer. */
+        /* Solo se reporta en el formulario de entrada. */
         onlSetStatus("Hubo un problema al crear la sala ("+(err?err.type:"error")+"). Inténtalo de nuevo.");
+      } else if(err && (err.type==="unavailable-id" || err.type==="server-error")) {
+        /* Error fatal con la sala ya abierta: sin esto la sala quedaba
+           fantasma sin avisar. Se avisa y se re-registra con el mismo
+           código, igual que hace la sonda cuando detecta la sala muerta. */
+        onlSetRoomStatus("Se perdió la conexión con el servidor, reconectando la sala…");
+        forceReregisterHost();
       }
     });
   };
@@ -1772,49 +1866,93 @@ $("#onlJoin").addEventListener("click",()=>{
   const peer=new Peer();
   onl.peer=peer; onl.isHost=false;
   guardPeer(peer);
-  /* Un solo intento no basta: si el anfitrión está reconectando su señal
-     con el broker (ver guardPeer), el primer intento devuelve
-     "peer-unavailable" aunque la sala sí exista. Se reintenta varias
-     veces antes de declarar que la sala no existe. */
+  /* La búsqueda tiene una ventana total de 60 s contada desde que se pulsa
+     «Unirse», sin límite fijo de intentos. Conectar a un ID que el broker
+     ya borró no falla al instante: la oferta queda en cola y el error
+     "peer-unavailable" tarda ~5 s en llegar, así que cada intento es caro
+     y la ventana debe dar tiempo a varios. Se reintenta ante CUALQUIER
+     fallo: "peer-unavailable", conexión que se cierra sin haber abierto
+     (el broker manda LEAVE si el anfitrión tenía el socket muerto),
+     error de la conexión antes de abrir, errores de red del peer y el
+     vigilante de 6 s por intento (la oferta llegó pero nadie responde). */
+  const joinDeadline=Date.now()+60000;
   let joinAttempts=0, joinDone=false;
+  const clearJoinTimers=()=>{
+    clearTimeout(onl.joinTimeout); onl.joinTimeout=null;
+    clearTimeout(onl.joinRetry); onl.joinRetry=null;
+    clearTimeout(onl.joinWatch); onl.joinWatch=null;
+  };
+  const giveUp=()=>{
+    if(joinDone) return;
+    joinDone=true;
+    clearJoinTimers();
+    onlSetStatus("No se encontró la sala "+code+" después de 60 s buscando. Puede que el anfitrión haya cerrado la sala o que su pestaña esté en segundo plano: pídele que vuelva a su pestaña y cree la sala de nuevo.");
+  };
+  const failAttempt=(conn, delay)=>{
+    if(joinDone || onl.peer!==peer || onl.phase!=="off") return;
+    if(conn && onl.hostConn!==conn) return;
+    clearTimeout(onl.joinWatch); onl.joinWatch=null;
+    if(Date.now()>=joinDeadline){ giveUp(); return; }
+    clearTimeout(onl.joinRetry);
+    onl.joinRetry=setTimeout(tryConnect, delay);
+  };
   const tryConnect=()=>{
     if(joinDone || onl.peer!==peer || onl.phase!=="off") return;
+    if(Date.now()>=joinDeadline){ giveUp(); return; }
     joinAttempts++;
+    onlSetStatus("Buscando la sala "+code+"… (intento "+joinAttempts+")");
     if(onl.hostConn){ try{ onl.hostConn.close(); }catch(e){} onl.hostConn=null; }
-    const conn=peer.connect(PEER_PREFIX+code.toLowerCase(), {reliable:true});
+    let conn=null;
+    try{ conn=peer.connect(PEER_PREFIX+code.toLowerCase(), {reliable:true}); }catch(e){}
+    if(!conn){
+      /* El peer aún no abrió su señalización: se reintenta en 1,5 s. */
+      clearTimeout(onl.joinRetry);
+      onl.joinRetry=setTimeout(tryConnect, 1500);
+      return;
+    }
     onl.hostConn=conn;
-    conn.on("open", ()=>{ conn.send({t:"hello", name:onl.myName}); });
+    let opened=false;
+    clearTimeout(onl.joinWatch);
+    onl.joinWatch=setTimeout(()=>{
+      /* Vigilante por intento: ni abrió ni dio error en 6 s. */
+      if(onl.hostConn===conn){ try{ conn.close(); }catch(e){} }
+      failAttempt(conn, 0);
+    }, 6000);
+    conn.on("open", ()=>{
+      if(onl.hostConn!==conn) return;
+      opened=true;
+      clearTimeout(onl.joinWatch); onl.joinWatch=null;
+      try{ conn.send({t:"hello", name:onl.myName}); }catch(e){}
+    });
     conn.on("data", msg=>applyMsg(msg));
+    conn.on("error", ()=>{
+      if(!opened) failAttempt(conn, 1500);
+    });
     conn.on("close", ()=>{
+      if(onl.hostConn!==conn) return;
       if(onl.phase!=="off"){
         toast("El anfitrión salió de la sala 👋");
         leaveOnline(false); show("scr-home");
+      } else if(!opened){
+        failAttempt(conn, 1500);
       }
     });
   };
   peer.on("open", id=>{
     onl.myId=id;
     tryConnect();
-    clearTimeout(onl.joinTimeout);
-    onl.joinTimeout=setTimeout(()=>{
-      if(onl.phase==="off" && !joinDone){
-        joinDone=true;
-        onlSetStatus("No se encontró la sala "+code+". Revisa el código e inténtalo otra vez.");
-      }
-    }, 30000);
   });
   peer.on("error", err=>{
-    if(err && err.type==="peer-unavailable" && onl.peer===peer && onl.phase==="off" && !joinDone){
-      if(joinAttempts<5){
-        onlSetStatus("Buscando la sala "+code+"… (intento "+(joinAttempts+1)+" de 5)");
-        setTimeout(tryConnect, 2500);
-      } else {
-        joinDone=true;
-        clearTimeout(onl.joinTimeout);
-        onlSetStatus("No existe una sala con el código "+code+" (o el anfitrión ya salió).");
-      }
+    if(!err || onl.peer!==peer || onl.phase!=="off" || joinDone) return;
+    if(err.type==="peer-unavailable"){
+      failAttempt(onl.hostConn, 1500);
+    } else if(err.type==="network" || err.type==="socket-error" || err.type==="server-error" || err.type==="socket-closed"){
+      tryReconnectPeer(peer);
+      failAttempt(onl.hostConn, 1500);
     }
   });
+  clearTimeout(onl.joinTimeout);
+  onl.joinTimeout=setTimeout(giveUp, 60000);
 });
 function wireGuestConn(conn){
   onl.conns[conn.peer]=conn;
@@ -1883,7 +2021,9 @@ function stopOnlineTimers(){
   if(onl.timer){ clearInterval(onl.timer); onl.timer=null; }
   if(onl.dispTimer){ clearInterval(onl.dispTimer); onl.dispTimer=null; }
   clearTimeout(onl.autoNext); clearTimeout(onl.joinTimeout);
+  clearTimeout(onl.joinRetry); clearTimeout(onl.joinWatch);
   clearTimeout(onl.lobbyTimer); onl.lobbyTimer=null;
+  stopHostProbe();
 }
 function leaveOnline(notify){
   stopOnlineTimers();
@@ -1938,9 +2078,10 @@ const LOBBY_TIMEOUT_MS=10*60*1000;
 function updateLobbyStatus(){
   if(onl.phase!=="lobby") return;
   if(onl.isHost){
-    onlSetRoomStatus(onl.players.length<2
+    onlSetRoomStatus((onl.players.length<2
       ? "Esperando jugadores… Comparte el código para que entren tus amigos. Si nadie entra en 10 minutos, la sala caduca sola."
-      : "¡Ya pueden jugar! Pulsa «Empezar partida» o espera a que entren más amigos.");
+      : "¡Ya pueden jugar! Pulsa «Empezar partida» o espera a que entren más amigos.")
+      + " Mantén esta pestaña visible mientras esperan tus amigos: si pasa mucho tiempo en segundo plano, la sala puede dejar de verse y se reconecta sola.");
   } else {
     onlSetRoomStatus("Esperando a que el anfitrión empiece la partida…");
   }
@@ -1994,7 +2135,13 @@ window.addEventListener("beforeunload", destroyPeerOnExit);
    mismo ID y la sala vuelve a existir para quien quiera entrar. */
 setInterval(()=>{ if(onl.phase!=="off") tryReconnectPeer(onl.peer); }, 10000);
 document.addEventListener("visibilitychange", ()=>{
-  if(!document.hidden && onl.phase!=="off") tryReconnectPeer(onl.peer);
+  if(!document.hidden && onl.phase!=="off"){
+    tryReconnectPeer(onl.peer);
+    /* Al volver a la pestaña, el anfitrión comprueba de inmediato que su
+       sala sigue existiendo en el broker (la sonda periódica pudo quedar
+       estrangulada mientras la pestaña estaba en segundo plano). */
+    if(onl.isHost && onl.phase==="lobby") runHostProbe();
+  }
 });
 
 /* ---------- mensajes que recibe un invitado (y el anfitrión en local) ---------- */
@@ -2002,7 +2149,9 @@ function applyMsg(msg){
   if(!msg || !msg.t) return;
   switch(msg.t){
     case "welcome": {
-      clearTimeout(onl.joinTimeout);
+      clearTimeout(onl.joinTimeout); onl.joinTimeout=null;
+      clearTimeout(onl.joinRetry); onl.joinRetry=null;
+      clearTimeout(onl.joinWatch); onl.joinWatch=null;
       onl.phase="lobby";
       onl.players=msg.players;
       onl.rounds=msg.rounds; onl.timeTotal=msg.timeTotal; onl.cat=msg.cat;
@@ -2111,6 +2260,7 @@ function hostOnMsg(msg, fromId){
 $("#onlStart").addEventListener("click",()=>{
   if(!onl.isHost) return;
   if(onl.players.length<2){ toast("Invita al menos a 1 amigo con el código 😊"); return; }
+  stopHostProbe();
   onl.rounds=parseInt(getOnlRounds(),10);
   onl.timeTotal=parseInt(getOnlTime(),10);
   onl.cat=$("#onlSelCat").value;
@@ -2367,6 +2517,7 @@ $("#oAgainLobby").addEventListener("click",()=>{
   onl.phase="lobby"; onl.turnIdx=0;
   const msg={t:"lobby", players:onl.players};
   applyMsg(msg); hostBroadcast(msg);
+  scheduleHostProbe(20000);
 });
 $("#oPodiumLeave").addEventListener("click",()=>askLeaveOnline());
 $("#oLeaveGame").addEventListener("click",()=>askLeaveOnline());
