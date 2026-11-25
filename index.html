@@ -59,6 +59,15 @@ h1,h2,h3,.fred{font-family:"Fredoka","Nunito",sans-serif; letter-spacing:.01em}
   padding:8px 16px;font-weight:900;cursor:pointer;font-size:14px;display:inline-flex;align-items:center;gap:7px;
 }
 .icon-btn:active{transform:scale(.97)}
+.sala-btn{
+  display:inline-flex;align-items:center;justify-content:center;gap:8px;
+  background:var(--sky);color:#fff;border:none;cursor:pointer;
+  font-weight:900;font-size:16.5px;line-height:1;letter-spacing:.01em;
+  padding:14px 24px;min-height:54px;border-radius:999px;
+  box-shadow:0 5px 0 #2563eb, var(--shadow);
+}
+.sala-btn:active{transform:scale(.97)}
+.sala-top{display:flex;justify-content:flex-start;margin-bottom:16px}
 
 /* ---------- generic ---------- */
 .screen{display:none}
@@ -256,6 +265,9 @@ label.flabel{display:block;font-weight:900;font-size:13px;text-transform:upperca
 
   <!-- ============ HOME ============ -->
   <section class="screen on" id="scr-home">
+    <div class="sala-top">
+      <button class="sala-btn" type="button" onclick="window.location.href='https://thedecro3312-ux.github.io/sala-de-juegos/'">← Sala de Juegos</button>
+    </div>
     <div class="mode-grid">
       <button class="mode-card card" id="goParty" type="button">
         <div class="mode-ico" style="background:rgba(255,90,95,.15)">
@@ -449,6 +461,7 @@ label.flabel{display:block;font-weight:900;font-size:13px;text-transform:upperca
       <div class="btn-row">
         <button class="btn btn-coral" id="againSame" type="button">🔁 Otra partida igual</button>
         <button class="btn btn-ghost" id="againSetup" type="button">Cambiar jugadores</button>
+        <button class="sala-btn" type="button" onclick="window.location.href='https://thedecro3312-ux.github.io/sala-de-juegos/'">← Sala de Juegos</button>
       </div>
     </div>
   </section>
@@ -494,6 +507,7 @@ label.flabel{display:block;font-weight:900;font-size:13px;text-transform:upperca
       <div class="btn-row">
         <button class="btn btn-teal" id="soloAgain" type="button">🔁 Jugar otra vez</button>
         <button class="btn btn-ghost" id="soloHome" type="button">Volver al inicio</button>
+        <button class="sala-btn" type="button" onclick="window.location.href='https://thedecro3312-ux.github.io/sala-de-juegos/'">← Sala de Juegos</button>
       </div>
     </div>
   </section>
@@ -683,6 +697,7 @@ label.flabel{display:block;font-weight:900;font-size:13px;text-transform:upperca
         <button class="btn btn-coral" id="oAgainLobby" type="button" style="display:none">🏠 Volver a la sala</button>
         <span class="muted" id="oPodiumWait" style="display:none;align-self:center">El anfitrión puede llevarlos de vuelta a la sala…</span>
         <button class="btn btn-ghost" id="oPodiumLeave" type="button">Salir</button>
+        <button class="sala-btn" type="button" onclick="window.location.href='https://thedecro3312-ux.github.io/sala-de-juegos/'">← Sala de Juegos</button>
       </div>
     </div>
   </section>
