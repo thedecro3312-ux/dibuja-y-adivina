@@ -40,7 +40,7 @@ body{
 button,[role="button"],select,input{font-family:inherit}
 button{min-height:44px}
 h1,h2,h3,.fred{font-family:"Fredoka","Nunito",sans-serif; letter-spacing:.01em}
-.wrap{max-width:1080px;margin:0 auto;padding:18px 16px 56px}
+.wrap{max-width:1080px;margin:0 auto;padding:78px 16px 56px}
 
 /* ---------- header ---------- */
 .topbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px}
@@ -68,6 +68,10 @@ h1,h2,h3,.fred{font-family:"Fredoka","Nunito",sans-serif; letter-spacing:.01em}
 }
 .sala-btn:active{transform:scale(.97)}
 .sala-top{display:flex;justify-content:flex-start;margin-bottom:16px}
+.sala-fixed{position:fixed;top:calc(10px + env(safe-area-inset-top, 0px));left:12px;z-index:1000;min-height:48px;padding:12px 20px;font-size:15px}
+.modal-overlay{position:fixed;inset:0;background:rgba(15,22,34,.55);display:none;place-items:center;z-index:900;padding:18px}
+.modal-overlay.on{display:grid}
+.modal-card{padding:26px 24px;max-width:420px;width:100%;text-align:center}
 
 /* ---------- generic ---------- */
 .screen{display:none}
@@ -245,6 +249,7 @@ label.flabel{display:block;font-weight:900;font-size:13px;text-transform:upperca
 </head>
 <body>
 <canvas id="confetti" width="0" height="0"></canvas>
+<button class="sala-btn sala-fixed" type="button" onclick="window.location.href='https://thedecro3312-ux.github.io/sala-de-juegos/'">← Sala de Juegos</button>
 <div class="wrap">
 
   <header class="topbar">
@@ -265,9 +270,6 @@ label.flabel{display:block;font-weight:900;font-size:13px;text-transform:upperca
 
   <!-- ============ HOME ============ -->
   <section class="screen on" id="scr-home">
-    <div class="sala-top">
-      <button class="sala-btn" type="button" onclick="window.location.href='https://thedecro3312-ux.github.io/sala-de-juegos/'">← Sala de Juegos</button>
-    </div>
     <div class="mode-grid">
       <button class="mode-card card" id="goParty" type="button">
         <div class="mode-ico" style="background:rgba(255,90,95,.15)">
@@ -461,7 +463,6 @@ label.flabel{display:block;font-weight:900;font-size:13px;text-transform:upperca
       <div class="btn-row">
         <button class="btn btn-coral" id="againSame" type="button">🔁 Otra partida igual</button>
         <button class="btn btn-ghost" id="againSetup" type="button">Cambiar jugadores</button>
-        <button class="sala-btn" type="button" onclick="window.location.href='https://thedecro3312-ux.github.io/sala-de-juegos/'">← Sala de Juegos</button>
       </div>
     </div>
   </section>
@@ -507,7 +508,6 @@ label.flabel{display:block;font-weight:900;font-size:13px;text-transform:upperca
       <div class="btn-row">
         <button class="btn btn-teal" id="soloAgain" type="button">🔁 Jugar otra vez</button>
         <button class="btn btn-ghost" id="soloHome" type="button">Volver al inicio</button>
-        <button class="sala-btn" type="button" onclick="window.location.href='https://thedecro3312-ux.github.io/sala-de-juegos/'">← Sala de Juegos</button>
       </div>
     </div>
   </section>
@@ -559,6 +559,9 @@ label.flabel{display:block;font-weight:900;font-size:13px;text-transform:upperca
       <div id="onlRoom" style="display:none">
         <p class="muted" style="text-align:center;margin:14px 0 0">Comparte este código con tus amigos:</p>
         <div class="room-code" id="onlRoomCode">····</div>
+        <div class="btn-row" style="margin:0 0 8px">
+          <button class="btn btn-teal" id="onlCopyCode" type="button">📋 Copiar código</button>
+        </div>
         <span class="flabel">Jugadores en la sala (<span id="onlCount">1</span>/6)</span>
         <div class="lobby-players" id="onlPlayers"></div>
         <div id="onlHostSettings">
@@ -613,6 +616,9 @@ label.flabel{display:block;font-weight:900;font-size:13px;text-transform:upperca
       <p>Elige tu palabra en secreto. Solo tú la ves; tus amigos verán el dibujo en vivo y la pista de letras.</p>
       <div class="word-choices" id="opWordChoices"></div>
       <p class="muted" id="opickRound" style="margin-top:16px"></p>
+      <div class="btn-row">
+        <button class="btn btn-ghost" id="opickLeave" type="button">🚪 Salir de la sala</button>
+      </div>
     </div>
   </section>
 
@@ -625,6 +631,9 @@ label.flabel{display:block;font-weight:900;font-size:13px;text-transform:upperca
       <h2 id="owaitTitle">Turno de dibujar de…</h2>
       <p id="owaitText">Está eligiendo su palabra en secreto 🙈</p>
       <div class="progress-dots" id="owaitDots"></div>
+      <div class="btn-row">
+        <button class="btn btn-ghost" id="owaitLeave" type="button">🚪 Salir de la sala</button>
+      </div>
     </div>
   </section>
 
@@ -641,6 +650,9 @@ label.flabel{display:block;font-weight:900;font-size:13px;text-transform:upperca
         </div>
         <div class="timer-bar"><div class="timer-fill" id="oHudTimerFill" style="width:100%"></div></div>
       </div>
+    </div>
+    <div style="display:flex;justify-content:flex-end;margin-bottom:12px">
+      <button class="btn btn-ghost" id="oLeaveHud" type="button">🚪 Salir de la sala</button>
     </div>
     <div class="play-flex">
       <div class="card canvas-card">
@@ -663,7 +675,7 @@ label.flabel{display:block;font-weight:900;font-size:13px;text-transform:upperca
             <button class="btn btn-coral" type="submit">Adivinar</button>
           </form>
         </div>
-        <button class="btn btn-ghost" id="oLeaveGame" type="button">🚪 Salir de la partida</button>
+        <button class="btn btn-ghost" id="oLeaveGame" type="button">🚪 Salir de la sala</button>
       </div>
     </div>
   </section>
@@ -681,6 +693,9 @@ label.flabel{display:block;font-weight:900;font-size:13px;text-transform:upperca
       <button class="btn btn-coral" id="oRevealNext" type="button" style="display:none">Siguiente turno →</button>
       <p class="muted" id="oRevealWait" style="display:none;margin:0">Esperando a que el anfitrión continúe…</p>
       <div class="progress-dots" id="oRevealDots"></div>
+      <div class="btn-row">
+        <button class="btn btn-ghost" id="orevealLeave" type="button">🚪 Salir de la sala</button>
+      </div>
     </div>
   </section>
 
@@ -696,12 +711,21 @@ label.flabel{display:block;font-weight:900;font-size:13px;text-transform:upperca
       <div class="btn-row">
         <button class="btn btn-coral" id="oAgainLobby" type="button" style="display:none">🏠 Volver a la sala</button>
         <span class="muted" id="oPodiumWait" style="display:none;align-self:center">El anfitrión puede llevarlos de vuelta a la sala…</span>
-        <button class="btn btn-ghost" id="oPodiumLeave" type="button">Salir</button>
-        <button class="sala-btn" type="button" onclick="window.location.href='https://thedecro3312-ux.github.io/sala-de-juegos/'">← Sala de Juegos</button>
+        <button class="btn btn-ghost" id="oPodiumLeave" type="button">Salir de la sala</button>
       </div>
     </div>
   </section>
 
+</div>
+<div class="modal-overlay" id="confirmLeave" role="dialog" aria-modal="true" aria-labelledby="confirmLeaveTitle">
+  <div class="card modal-card">
+    <h2 id="confirmLeaveTitle" style="margin:0 0 8px;font-size:22px">¿Seguro que quieres salir de la sala?</h2>
+    <p class="muted" style="margin:0 0 18px">Se avisará a los demás jugadores y saldrás de la partida en línea.</p>
+    <div class="btn-row">
+      <button class="btn btn-coral" id="confirmLeaveYes" type="button">Sí, salir</button>
+      <button class="btn btn-ghost" id="confirmLeaveNo" type="button">Cancelar</button>
+    </div>
+  </div>
 </div>
 <div class="toast" id="toast" role="status"></div>
 
@@ -1121,7 +1145,14 @@ function buildTools(container, board){
 }
 
 /* ================= NAVEGACIÓN ================= */
-$("#homeBtn").addEventListener("click",()=>{ stopPartyTimer(); stopSolo(); if(typeof leaveOnline==="function") leaveOnline(false); show("scr-home"); });
+$("#homeBtn").addEventListener("click",()=>{
+  stopPartyTimer(); stopSolo();
+  if(typeof onl!=="undefined" && onl.phase && onl.phase!=="off"){
+    askConfirmLeave(()=>{ leaveOnline(false); show("scr-home"); });
+    return;
+  }
+  show("scr-home");
+});
 $("#goParty").addEventListener("click",()=>{ sfx.click(); show("scr-setup"); });
 $("#backHome1").addEventListener("click",()=>show("scr-home"));
 $("#goFree").addEventListener("click",()=>{ sfx.click(); show("scr-free"); });
@@ -1573,7 +1604,8 @@ const CAT_NAMES={todas:"🎲 De todo un poco", animales:"🐶 Animales", comida:
 const onl={ peer:null, isHost:false, code:"", myId:"", myName:"", hostConn:null, conns:{},
   players:[], phase:"off", drawerId:"", word:"", timeTotal:90, timeLeft:0, timer:null,
   dispTimer:null, turnEndAt:0, turnIdx:0, rounds:2, totalTurns:0, over:false,
-  cat:"todas", usedWords:[], autoNext:null, board:null, joinTimeout:null };
+  cat:"todas", usedWords:[], autoNext:null, board:null, joinTimeout:null,
+  lobbyTimer:null, _pendingLeave:null };
 
 /* ---------- transmisión de trazos (solo actúa quien dibuja) ---------- */
 let strokePend=[], strokeLastSend=0;
@@ -1728,6 +1760,8 @@ function hostGuestLeft(peerId){
   if(onl.phase==="lobby"){ syncPlayers(); return; }
   if(onl.phase==="pick" || onl.phase==="draw" || onl.phase==="reveal"){
     syncPlayers();
+    const feedMsg={t:"feed", name:"Juego", text:leaver.name+" salió de la sala 👋", cls:""};
+    applyMsg(feedMsg); hostBroadcast(feedMsg);
     if(onl.players.length<2){
       clearTimeout(onl.autoNext);
       hostEndGame();
@@ -1750,8 +1784,8 @@ function enterRoomUI(){
   $("#onlHostSettings").style.display=onl.isHost?"block":"none";
   $("#onlStart").style.display=onl.isHost?"inline-flex":"none";
   $("#onlGuestSettings").style.display=onl.isHost?"none":"block";
-  onlSetRoomStatus(onl.isHost ? "Cuando entren tus amigos, pulsa «Empezar partida»." : "Esperando a que el anfitrión empiece la partida…");
   renderLobbyPlayers();
+  updateLobbyStatus();
   show("scr-online");
 }
 function renderLobbyPlayers(){
@@ -1764,23 +1798,29 @@ function renderLobbyPlayers(){
       '<span class="tag">'+(i===0?"👑 Anfitrión":"")+(p.id===onl.myId?" · Tú":"")+'</span>';
     list.appendChild(row);
   });
+  updateLobbyStatus();
+  armLobbyExpiry();
 }
 const getOnlRounds=segWire("#onlSegRounds");
 const getOnlTime=segWire("#onlSegTime");
 $("#onlSegRounds").addEventListener("click",()=>{ if(onl.isHost){ onl.rounds=parseInt(getOnlRounds(),10); syncSettings(); } });
 $("#onlSegTime").addEventListener("click",()=>{ if(onl.isHost){ onl.timeTotal=parseInt(getOnlTime(),10); syncSettings(); } });
 $("#onlSelCat").addEventListener("change",()=>{ if(onl.isHost){ onl.cat=$("#onlSelCat").value; syncSettings(); } });
-$("#onlLeave").addEventListener("click",()=>{ leaveOnline(true); });
+$("#onlLeave").addEventListener("click",()=>{ askLeaveOnline(); });
 
 /* ---------- salir / limpiar ---------- */
 function stopOnlineTimers(){
   if(onl.timer){ clearInterval(onl.timer); onl.timer=null; }
   if(onl.dispTimer){ clearInterval(onl.dispTimer); onl.dispTimer=null; }
   clearTimeout(onl.autoNext); clearTimeout(onl.joinTimeout);
+  clearTimeout(onl.lobbyTimer); onl.lobbyTimer=null;
 }
 function leaveOnline(notify){
   stopOnlineTimers();
-  if(onl.isHost && onl.phase!=="off") hostBroadcast({t:"hostleft"});
+  if(onl.phase!=="off"){
+    if(onl.isHost) hostBroadcast({t:"hostleft"});
+    else if(onl.hostConn && onl.hostConn.open){ try{ onl.hostConn.send({t:"leave"}); }catch(e){} }
+  }
   if(onl.peer){ try{ onl.peer.destroy(); }catch(e){} }
   onl.peer=null; onl.isHost=false; onl.conns={}; onl.hostConn=null;
   onl.players=[]; onl.phase="off"; onl.word=""; onl.drawerId="";
@@ -1790,6 +1830,75 @@ function leaveOnline(notify){
   onlSetStatus("");
   if(notify){ toast("Saliste de la sala"); show("scr-home"); }
 }
+
+/* ---------- confirmación para salir de la sala ---------- */
+function askConfirmLeave(action){
+  onl._pendingLeave=action;
+  $("#confirmLeave").classList.add("on");
+}
+$("#confirmLeaveYes").addEventListener("click",()=>{
+  $("#confirmLeave").classList.remove("on");
+  const a=onl._pendingLeave; onl._pendingLeave=null;
+  if(a) a();
+});
+$("#confirmLeaveNo").addEventListener("click",()=>{
+  $("#confirmLeave").classList.remove("on");
+  onl._pendingLeave=null;
+});
+function askLeaveOnline(){ askConfirmLeave(()=>leaveOnline(true)); }
+
+/* ---------- estado de espera y caducidad de la sala (10 min sin jugadores) ---------- */
+const LOBBY_TIMEOUT_MS=10*60*1000;
+function updateLobbyStatus(){
+  if(onl.phase!=="lobby") return;
+  if(onl.isHost){
+    onlSetRoomStatus(onl.players.length<2
+      ? "Esperando jugadores… Comparte el código para que entren tus amigos. Si nadie entra en 10 minutos, la sala caduca sola."
+      : "¡Ya pueden jugar! Pulsa «Empezar partida» o espera a que entren más amigos.");
+  } else {
+    onlSetRoomStatus("Esperando a que el anfitrión empiece la partida…");
+  }
+}
+function armLobbyExpiry(){
+  clearTimeout(onl.lobbyTimer); onl.lobbyTimer=null;
+  if(onl.phase==="lobby" && onl.players.length<2){
+    onl.lobbyTimer=setTimeout(expireLobby, LOBBY_TIMEOUT_MS);
+  }
+}
+function expireLobby(){
+  if(onl.phase!=="lobby" || onl.players.length>=2) return;
+  leaveOnline(false);
+  show("scr-online");
+  onlSetStatus("⏰ La sala caducó: pasaron 10 minutos en espera sin que entrara ningún jugador. Crea una sala nueva cuando quieras.");
+  toast("La sala caducó por inactividad ⏰", 4200);
+}
+
+/* ---------- copiar el código de la sala ---------- */
+function fallbackCopyCode(text, done){
+  const ta=document.createElement("textarea");
+  ta.value=text; ta.style.position="fixed"; ta.style.opacity="0";
+  document.body.appendChild(ta); ta.select();
+  try{ document.execCommand("copy"); done(); }
+  catch(e){ toast("Tu código es "+text); }
+  ta.remove();
+}
+$("#onlCopyCode").addEventListener("click",()=>{
+  const code=onl.code||"";
+  if(!code) return;
+  const done=()=>toast("Código copiado: "+code+" 📋");
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(code).then(done).catch(()=>fallbackCopyCode(code, done));
+  } else fallbackCopyCode(code, done);
+});
+
+/* ---------- destruir el peer al cerrar la página ---------- */
+function destroyPeerOnExit(){
+  try{ if(onl.isHost && onl.phase!=="off") hostBroadcast({t:"hostleft"}); }catch(e){}
+  try{ if(!onl.isHost && onl.hostConn && onl.hostConn.open) onl.hostConn.send({t:"leave"}); }catch(e){}
+  try{ if(onl.peer) onl.peer.destroy(); }catch(e){}
+}
+window.addEventListener("pagehide", destroyPeerOnExit);
+window.addEventListener("beforeunload", destroyPeerOnExit);
 
 /* ---------- mensajes que recibe un invitado (y el anfitrión en local) ---------- */
 function applyMsg(msg){
@@ -1882,6 +1991,9 @@ function hostOnMsg(msg, fromId){
   const player=playerById(fromId);
   if(!player) return;
   switch(msg.t){
+    case "leave":
+      hostGuestLeft(fromId);
+      break;
     case "picked":
       if(onl.phase==="pick" && fromId===onl.drawerId) hostStartDrawing(msg.word);
       break;
@@ -1921,6 +2033,7 @@ function pickChoices(){
 function roundOfTurn(){ return Math.floor(onl.turnIdx/onl.players.length)+1; }
 function hostNextTurn(){
   clearTimeout(onl.autoNext);
+  clearTimeout(onl.lobbyTimer); onl.lobbyTimer=null;
   if(onl.turnIdx>=onl.totalTurns || onl.players.length<2){ hostEndGame(); return; }
   const drawer=onl.players[onl.turnIdx % onl.players.length];
   onl.drawerId=drawer.id;
@@ -2158,8 +2271,12 @@ $("#oAgainLobby").addEventListener("click",()=>{
   const msg={t:"lobby", players:onl.players};
   applyMsg(msg); hostBroadcast(msg);
 });
-$("#oPodiumLeave").addEventListener("click",()=>leaveOnline(true));
-$("#oLeaveGame").addEventListener("click",()=>leaveOnline(true));
+$("#oPodiumLeave").addEventListener("click",()=>askLeaveOnline());
+$("#oLeaveGame").addEventListener("click",()=>askLeaveOnline());
+$("#oLeaveHud").addEventListener("click",()=>askLeaveOnline());
+$("#opickLeave").addEventListener("click",()=>askLeaveOnline());
+$("#owaitLeave").addEventListener("click",()=>askLeaveOnline());
+$("#orevealLeave").addEventListener("click",()=>askLeaveOnline());
 </script>
 </body>
 </html>
