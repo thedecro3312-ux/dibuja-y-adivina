@@ -727,6 +727,16 @@ label.flabel{display:block;font-weight:900;font-size:13px;text-transform:upperca
     </div>
   </div>
 </div>
+<div class="modal-overlay" id="confirmExit" role="dialog" aria-modal="true" aria-labelledby="confirmExitTitle">
+  <div class="card modal-card">
+    <h2 id="confirmExitTitle" style="margin:0 0 8px;font-size:22px">¿Seguro que quieres salir?</h2>
+    <p class="muted" style="margin:0 0 18px">Se abandona la partida en curso y se pierden los puntos de esta partida.</p>
+    <div class="btn-row">
+      <button class="btn btn-coral" id="confirmExitYes" type="button">Sí, salir</button>
+      <button class="btn btn-ghost" id="confirmExitNo" type="button">Cancelar</button>
+    </div>
+  </div>
+</div>
 <div class="toast" id="toast" role="status"></div>
 
 <script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
@@ -762,7 +772,9 @@ function toast(msg, ms){
   const t=$("#toast"); t.textContent=msg; t.classList.add("on");
   clearTimeout(toastTimer); toastTimer=setTimeout(()=>t.classList.remove("on"), ms||2600);
 }
+let curScreen="scr-home";
 function show(id){
+  curScreen=id;
   $$(".screen").forEach(s=>s.classList.remove("on"));
   $("#"+id).classList.add("on");
   window.scrollTo({top:0, behavior:"smooth"});
@@ -1145,12 +1157,22 @@ function buildTools(container, board){
 }
 
 /* ================= NAVEGACIÓN ================= */
+/* Pantallas con una partida local en curso (Fiesta a mitad de partida o
+   Adivina el Trazo jugándose): salir de ahí abandona la partida. */
+const IN_GAME_SCREENS=["scr-pass","scr-pick","scr-play","scr-reveal","scr-solo"];
+function localGameInProgress(){ return IN_GAME_SCREENS.indexOf(curScreen)>=0; }
 $("#homeBtn").addEventListener("click",()=>{
-  stopPartyTimer(); stopSolo();
   if(typeof onl!=="undefined" && onl.phase && onl.phase!=="off"){
     askConfirmLeave(()=>{ leaveOnline(false); show("scr-home"); });
     return;
   }
+  if(localGameInProgress()){
+    /* No se detiene ningún temporizador hasta que confirmen: si cancelan,
+       la partida sigue exactamente como estaba. */
+    askConfirmExit(()=>{ stopPartyTimer(); stopSolo(); show("scr-home"); });
+    return;
+  }
+  stopPartyTimer(); stopSolo();
   show("scr-home");
 });
 $("#goParty").addEventListener("click",()=>{ sfx.click(); show("scr-setup"); });
@@ -1348,6 +1370,7 @@ function endTurn(success){
   const timeBonus=Math.round(party.timeLeft/party.timeTotal*60);
   renderScores();
   setTimeout(()=>{
+    if(curScreen!=="scr-play") return; /* salieron al inicio mientras tanto */
     const drawer=party.players[party.drawerIdx];
     $("#revealWord").textContent=party.word;
     const who=$("#revealWho"); who.innerHTML="";
@@ -1575,7 +1598,7 @@ function finishSoloRound(success){
   const lock=$("#soloLock");
   lock.style.display="grid";
   lock.innerHTML=(success? "🎉 ¡Era un"+( /[aeiouáéíóú]$/i.test("")?"":"" )+" <b>&nbsp;"+escapeHtml(solo.word.toUpperCase())+"</b>! +"+pts+" pts" : "⏰ Era: <b>&nbsp;"+escapeHtml(solo.word.toUpperCase())+"</b>");
-  setTimeout(()=>{ solo.round++; nextSoloRound(); }, 2100);
+  setTimeout(()=>{ if(curScreen!=="scr-solo") return; solo.round++; nextSoloRound(); }, 2100);
 }
 function endSolo(){
   const list=$("#soloEndList"); list.innerHTML="";
@@ -1680,6 +1703,29 @@ function peerAvailable(){
   }
   return true;
 }
+/* PeerJS NO reconecta solo su conexión con el broker: si ese socket se cae
+   (el broker lo cierra, la pestaña pasa a segundo plano, un microcorte de
+   red), el broker da de baja el ID del anfitrión. Su pantalla sigue
+   mostrando la sala abierta, pero quien intenta entrar recibe
+   "peer-unavailable" y la sala "no existe". Esto vigila la caída y
+   reconecta con el MISMO ID para que la sala siga existiendo. */
+function tryReconnectPeer(peer){
+  if(!peer || peer.destroyed || !peer.disconnected) return;
+  try{ peer.reconnect(); }catch(e){}
+}
+function guardPeer(peer){
+  peer.on("disconnected", ()=>{
+    if(onl.peer!==peer) return;
+    let tries=0;
+    const retry=()=>{
+      if(onl.peer!==peer || peer.destroyed || !peer.disconnected) return;
+      tryReconnectPeer(peer);
+      tries++;
+      if(tries<12) setTimeout(retry, 3000);
+    };
+    setTimeout(retry, 800);
+  });
+}
 $("#onlCreate").addEventListener("click",()=>{
   if(!peerAvailable()) return;
   sfx.click();
@@ -1699,12 +1745,15 @@ $("#onlCreate").addEventListener("click",()=>{
       enterRoomUI();
       toast("Sala creada 🎉 Comparte el código "+onl.code);
     });
+    guardPeer(peer);
     peer.on("connection", conn=>wireGuestConn(conn));
     peer.on("error", err=>{
-      if(err && err.type==="unavailable-id" && attempts<6){
+      if(err && err.type==="unavailable-id" && attempts<6 && onl.phase==="off"){
         try{ peer.destroy(); }catch(e){}
         tryCreate();
-      } else {
+      } else if(onl.phase==="off") {
+        /* Solo se reporta en el formulario de entrada; si la sala ya está
+           abierta, los errores de señalización los cura guardPeer. */
         onlSetStatus("Hubo un problema al crear la sala ("+(err?err.type:"error")+"). Inténtalo de nuevo.");
       }
     });
@@ -1722,8 +1771,16 @@ $("#onlJoin").addEventListener("click",()=>{
   onlSetStatus("Buscando la sala "+code+"…");
   const peer=new Peer();
   onl.peer=peer; onl.isHost=false;
-  peer.on("open", id=>{
-    onl.myId=id;
+  guardPeer(peer);
+  /* Un solo intento no basta: si el anfitrión está reconectando su señal
+     con el broker (ver guardPeer), el primer intento devuelve
+     "peer-unavailable" aunque la sala sí exista. Se reintenta varias
+     veces antes de declarar que la sala no existe. */
+  let joinAttempts=0, joinDone=false;
+  const tryConnect=()=>{
+    if(joinDone || onl.peer!==peer || onl.phase!=="off") return;
+    joinAttempts++;
+    if(onl.hostConn){ try{ onl.hostConn.close(); }catch(e){} onl.hostConn=null; }
     const conn=peer.connect(PEER_PREFIX+code.toLowerCase(), {reliable:true});
     onl.hostConn=conn;
     conn.on("open", ()=>{ conn.send({t:"hello", name:onl.myName}); });
@@ -1734,15 +1791,28 @@ $("#onlJoin").addEventListener("click",()=>{
         leaveOnline(false); show("scr-home");
       }
     });
+  };
+  peer.on("open", id=>{
+    onl.myId=id;
+    tryConnect();
     clearTimeout(onl.joinTimeout);
     onl.joinTimeout=setTimeout(()=>{
-      if(onl.phase==="off") onlSetStatus("No se encontró la sala "+code+". Revisa el código e inténtalo otra vez.");
-    }, 9000);
+      if(onl.phase==="off" && !joinDone){
+        joinDone=true;
+        onlSetStatus("No se encontró la sala "+code+". Revisa el código e inténtalo otra vez.");
+      }
+    }, 30000);
   });
   peer.on("error", err=>{
-    if(err && err.type==="peer-unavailable"){
-      clearTimeout(onl.joinTimeout);
-      onlSetStatus("No existe una sala con el código "+code+" (o el anfitrión ya salió).");
+    if(err && err.type==="peer-unavailable" && onl.peer===peer && onl.phase==="off" && !joinDone){
+      if(joinAttempts<5){
+        onlSetStatus("Buscando la sala "+code+"… (intento "+(joinAttempts+1)+" de 5)");
+        setTimeout(tryConnect, 2500);
+      } else {
+        joinDone=true;
+        clearTimeout(onl.joinTimeout);
+        onlSetStatus("No existe una sala con el código "+code+" (o el anfitrión ya salió).");
+      }
     }
   });
 });
@@ -1847,6 +1917,22 @@ $("#confirmLeaveNo").addEventListener("click",()=>{
 });
 function askLeaveOnline(){ askConfirmLeave(()=>leaveOnline(true)); }
 
+/* ---------- confirmación para abandonar una partida local en curso ---------- */
+let _pendingExit=null;
+function askConfirmExit(action){
+  _pendingExit=action;
+  $("#confirmExit").classList.add("on");
+}
+$("#confirmExitYes").addEventListener("click",()=>{
+  $("#confirmExit").classList.remove("on");
+  const a=_pendingExit; _pendingExit=null;
+  if(a) a();
+});
+$("#confirmExitNo").addEventListener("click",()=>{
+  $("#confirmExit").classList.remove("on");
+  _pendingExit=null;
+});
+
 /* ---------- estado de espera y caducidad de la sala (10 min sin jugadores) ---------- */
 const LOBBY_TIMEOUT_MS=10*60*1000;
 function updateLobbyStatus(){
@@ -1899,6 +1985,17 @@ function destroyPeerOnExit(){
 }
 window.addEventListener("pagehide", destroyPeerOnExit);
 window.addEventListener("beforeunload", destroyPeerOnExit);
+
+/* ---------- vigilante de señalización ----------
+   Red de seguridad además de guardPeer: si el socket con el broker se
+   cayó mientras la pestaña estaba en segundo plano (los temporizadores
+   se estrangulan y el evento "disconnected" pudo no atenderse a tiempo),
+   al volver a la pestaña o en la revisión periódica se reconecta con el
+   mismo ID y la sala vuelve a existir para quien quiera entrar. */
+setInterval(()=>{ if(onl.phase!=="off") tryReconnectPeer(onl.peer); }, 10000);
+document.addEventListener("visibilitychange", ()=>{
+  if(!document.hidden && onl.phase!=="off") tryReconnectPeer(onl.peer);
+});
 
 /* ---------- mensajes que recibe un invitado (y el anfitrión en local) ---------- */
 function applyMsg(msg){
