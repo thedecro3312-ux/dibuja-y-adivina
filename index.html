@@ -1623,6 +1623,15 @@ $("#soloHome").addEventListener("click",()=>show("scr-home"));
    palabra, reloj, puntos y rotación de turnos viven en su dispositivo
    y se transmiten a todos. Los trazos viajan en vivo trazo a trazo. */
 const PEER_PREFIX="dibujayadivina-";
+/* ICE: STUN primero y TURN (Open Relay público) solo como respaldo.
+   Sin TURN, en redes que bloquean UDP o con NAT simétrico el canal de
+   datos WebRTC nunca abre: la señalización llega, pero ICE se queda en
+   "checking" y termina en "failed". Con el TURN como relevo, ICE tiene
+   por dónde conectar en esos casos. */
+const PEER_OPTS={ config:{ iceServers:[
+  { urls:"stun:stun.l.google.com:19302" },
+  { urls:["turn:openrelay.metered.ca:80","turn:openrelay.metered.ca:443","turn:openrelay.metered.ca:443?transport=tcp","turns:openrelay.metered.ca:443?transport=tcp"], username:"openrelayproject", credential:"openrelayproject" }
+] } };
 const CAT_NAMES={todas:"🎲 De todo un poco", animales:"🐶 Animales", comida:"🍕 Comida", objetos:"🚲 Objetos y cosas", lugares:"🏖️ Lugares", acciones:"🏃 Acciones", fantasia:"🐉 Fantasía"};
 const onl={ peer:null, isHost:false, code:"", myId:"", myName:"", hostConn:null, conns:{},
   players:[], phase:"off", drawerId:"", word:"", timeTotal:90, timeLeft:0, timer:null,
@@ -1771,7 +1780,7 @@ function runHostProbe(){
   if(typeof Peer==="undefined") return;
   onl.probeActive=true;
   const hostPeer=onl.peer;
-  const probe=new Peer();
+  const probe=new Peer(undefined, PEER_OPTS);
   onl.probePeer=probe;
   let settled=false;
   const finish=(alive)=>{
@@ -1811,7 +1820,7 @@ $("#onlCreate").addEventListener("click",()=>{
   const tryCreate=()=>{
     attempts++;
     onl.code=randCode();
-    const peer=new Peer(PEER_PREFIX+onl.code.toLowerCase());
+    const peer=new Peer(PEER_PREFIX+onl.code.toLowerCase(), PEER_OPTS);
     onl.peer=peer;
     peer.on("open", id=>{
       if(onl.peer!==peer) return;
@@ -1863,7 +1872,7 @@ $("#onlJoin").addEventListener("click",()=>{
   onl.myName=readMyName();
   onl.code=code;
   onlSetStatus("Buscando la sala "+code+"…");
-  const peer=new Peer();
+  const peer=new Peer(undefined, PEER_OPTS);
   onl.peer=peer; onl.isHost=false;
   guardPeer(peer);
   /* La búsqueda tiene una ventana total de 60 s contada desde que se pulsa
@@ -1877,6 +1886,10 @@ $("#onlJoin").addEventListener("click",()=>{
      vigilante de 6 s por intento (la oferta llegó pero nadie responde). */
   const joinDeadline=Date.now()+60000;
   let joinAttempts=0, joinDone=false;
+  /* ¿Algún intento llegó a la fase ICE? Distingue "la sala no existe"
+     (la oferta ni siquiera se negocia) de "la sala existe pero el canal
+     de datos no abre" (ICE entra en checking pero nunca conecta). */
+  let joinSawIce=false;
   const clearJoinTimers=()=>{
     clearTimeout(onl.joinTimeout); onl.joinTimeout=null;
     clearTimeout(onl.joinRetry); onl.joinRetry=null;
@@ -1886,7 +1899,13 @@ $("#onlJoin").addEventListener("click",()=>{
     if(joinDone) return;
     joinDone=true;
     clearJoinTimers();
-    onlSetStatus("No se encontró la sala "+code+" después de 60 s buscando. Puede que el anfitrión haya cerrado la sala o que su pestaña esté en segundo plano: pídele que vuelva a su pestaña y cree la sala de nuevo.");
+    if(joinSawIce){
+      /* La señalización llegó a la anfitriona e ICE empezó a negociar,
+         pero el canal de datos nunca abrió: la sala SÍ existe. */
+      onlSetStatus("La sala "+code+" existe pero no se pudo conectar después de 60 s. Revisa tu conexión a internet o pídele a la anfitriona que revise la suya y que mantenga su pestaña visible.");
+    } else {
+      onlSetStatus("No se encontró la sala "+code+" después de 60 s buscando. Puede que el anfitrión haya cerrado la sala o que su pestaña esté en segundo plano: pídele que vuelva a su pestaña y cree la sala de nuevo.");
+    }
   };
   const failAttempt=(conn, delay)=>{
     if(joinDone || onl.peer!==peer || onl.phase!=="off") return;
@@ -1911,6 +1930,21 @@ $("#onlJoin").addEventListener("click",()=>{
       return;
     }
     onl.hostConn=conn;
+    /* Vigía ICE del intento: si el RTCPeerConnection llega a "checking"
+       o "connected", la sala existe aunque el canal nunca abra. Se usa
+       addEventListener para no pisar los manejadores internos de PeerJS. */
+    try{
+      const pc=conn.peerConnection;
+      if(pc){
+        const markIce=()=>{
+          const st=pc.iceConnectionState;
+          if(st==="checking" || st==="connected" || st==="completed") joinSawIce=true;
+        };
+        if(typeof pc.addEventListener==="function") pc.addEventListener("iceconnectionstatechange", markIce);
+        else pc.oniceconnectionstatechange=markIce;
+        markIce();
+      }
+    }catch(e){}
     let opened=false;
     clearTimeout(onl.joinWatch);
     onl.joinWatch=setTimeout(()=>{
@@ -1921,6 +1955,7 @@ $("#onlJoin").addEventListener("click",()=>{
     conn.on("open", ()=>{
       if(onl.hostConn!==conn) return;
       opened=true;
+      joinSawIce=true;
       clearTimeout(onl.joinWatch); onl.joinWatch=null;
       try{ conn.send({t:"hello", name:onl.myName}); }catch(e){}
     });
@@ -1956,8 +1991,23 @@ $("#onlJoin").addEventListener("click",()=>{
 });
 function wireGuestConn(conn){
   onl.conns[conn.peer]=conn;
-  conn.on("data", msg=>hostOnMsg(msg, conn.peer));
+  let saidHello=false;
+  conn.on("data", msg=>{
+    if(msg && msg.t==="hello") saidHello=true;
+    hostOnMsg(msg, conn.peer);
+  });
   conn.on("close", ()=>hostGuestLeft(conn.peer));
+  /* Limpieza: una conexión que en 10 s no ha dicho "hello" no es un
+     jugador: es la sonda de sala viva o un intento cuya ICE nunca
+     completó. Sin esto, esas entradas se acumulaban en onl.conns para
+     siempre. Un invitado real dice "hello" nada más abrir, así que el
+     plazo no le afecta. Al cerrarla, el manejador de "close" la borra
+     de onl.conns vía hostGuestLeft. */
+  setTimeout(()=>{
+    if(saidHello) return;
+    if(onl.conns[conn.peer]!==conn) return;
+    try{ conn.close(); }catch(e){}
+  }, 10000);
 }
 function hostGuestLeft(peerId){
   if(!onl.isHost) return;
