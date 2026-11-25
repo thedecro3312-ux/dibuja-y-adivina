@@ -1623,14 +1623,16 @@ $("#soloHome").addEventListener("click",()=>show("scr-home"));
    palabra, reloj, puntos y rotación de turnos viven en su dispositivo
    y se transmiten a todos. Los trazos viajan en vivo trazo a trazo. */
 const PEER_PREFIX="dibujayadivina-";
-/* ICE: STUN primero y TURN (Open Relay público) solo como respaldo.
-   Sin TURN, en redes que bloquean UDP o con NAT simétrico el canal de
-   datos WebRTC nunca abre: la señalización llega, pero ICE se queda en
-   "checking" y termina en "failed". Con el TURN como relevo, ICE tiene
-   por dónde conectar en esos casos. */
+/* ICE: la configuración por defecto de PeerJS, idéntica a la que usa el
+   emulador GBA (que sí conecta en el mismo broker y la misma red): STUN
+   de Google y el TURN propio de PeerJS como relevo. Se quitó OpenRelay:
+   eran credenciales públicas de demostración sin verificar, su URL
+   "turns:openrelay.metered.ca:443?transport=tcp" es inválida, y al
+   ponerlo se reemplazó el TURN de PeerJS, perdiendo el único relevo que
+   ha demostrado funcionar aquí. */
 const PEER_OPTS={ config:{ iceServers:[
   { urls:"stun:stun.l.google.com:19302" },
-  { urls:["turn:openrelay.metered.ca:80","turn:openrelay.metered.ca:443","turn:openrelay.metered.ca:443?transport=tcp","turns:openrelay.metered.ca:443?transport=tcp"], username:"openrelayproject", credential:"openrelayproject" }
+  { urls:["turn:eu-0.turn.peerjs.com:3478","turn:us-0.turn.peerjs.com:3478"], username:"peerjs", credential:"peerjsp" }
 ] } };
 const CAT_NAMES={todas:"🎲 De todo un poco", animales:"🐶 Animales", comida:"🍕 Comida", objetos:"🚲 Objetos y cosas", lugares:"🏖️ Lugares", acciones:"🏃 Acciones", fantasia:"🐉 Fantasía"};
 const onl={ peer:null, isHost:false, code:"", myId:"", myName:"", hostConn:null, conns:{},
@@ -1761,9 +1763,14 @@ function forceReregisterHost(){
    "Esperando jugadores…" sobre una sala fantasma. La única forma de
    saberlo es comprobar desde fuera: cada 20 s se crea un peer temporal
    que intenta conectar al ID de la sala (sin enviar "hello", así que no
-   se añade como jugador). Si su conexión abre en menos de 6 s, la sala
-   vive; si recibe "peer-unavailable" o no abre en 6 s, la sala murió y se
-   fuerza el re-registro con el mismo código. */
+   se añade como jugador). La vida de la sala se mide por SEÑALIZACIÓN,
+   no por la apertura del canal de datos (que puede fallar por ICE
+   aunque la sala esté viva): la sala VIVE si el PC de la sonda llega a
+   signalingState "stable" (el anfitrión respondió) o si el canal abre;
+   la sala MURIÓ solo si llega "peer-unavailable", y entonces se fuerza
+   el re-registro con el mismo código. Si a los 6 s no llegó respuesta
+   ni "peer-unavailable", la sonda es INCONCLUSA: no se re-registra ni
+   se toca el estado de la sala, solo se vuelve a sondar a los 10 s. */
 function stopHostProbe(){
   clearTimeout(onl.probeTimer); onl.probeTimer=null;
   onl.probeActive=false;
@@ -1783,7 +1790,10 @@ function runHostProbe(){
   const probe=new Peer(undefined, PEER_OPTS);
   onl.probePeer=probe;
   let settled=false;
-  const finish=(alive)=>{
+  /* result: "alive" (el anfitrión respondió o el canal abrió),
+     "dead" (el broker dijo "peer-unavailable": la sala ya no existe),
+     "inconclusive" (sin respuesta en 6 s: no se toca nada). */
+  const finish=(result)=>{
     if(settled) return;
     settled=true;
     clearTimeout(watchdog);
@@ -1791,23 +1801,44 @@ function runHostProbe(){
     if(onl.probePeer===probe) onl.probePeer=null;
     onl.probeActive=false;
     if(onl.peer!==hostPeer || !onl.isHost || onl.phase!=="lobby") return;
-    if(alive){
+    if(result==="alive"){
       scheduleHostProbe(20000);
-    } else {
+    } else if(result==="dead"){
       onlSetRoomStatus("Reconectando la sala…");
       forceReregisterHost();
       scheduleHostProbe(20000);
+    } else {
+      /* Inconcluso: ni re-registro ni cambio de estado; se re-sonda
+         antes (10 s en vez de 20 s) para salir de dudas pronto. */
+      scheduleHostProbe(10000);
     }
   };
-  const watchdog=setTimeout(()=>finish(false), 6000);
+  const watchdog=setTimeout(()=>finish("inconclusive"), 6000);
   probe.on("open", ()=>{
     const c=probe.connect(PEER_PREFIX+onl.code.toLowerCase(), {reliable:true});
-    c.on("open", ()=>finish(true));
-    c.on("error", ()=>finish(false));
-    c.on("close", ()=>finish(false));
+    c.on("open", ()=>finish("alive"));
+    c.on("error", ()=>finish("inconclusive"));
+    c.on("close", ()=>finish("inconclusive"));
+    /* Vida por señalización: si la respuesta del anfitrión se aplica,
+       el signalingState vuelve a "stable" tras haber salido de él (un
+       PC recién creado ya nace en "stable": solo cuenta el regreso). */
+    try{
+      const pc=c.peerConnection;
+      if(pc){
+        let sigLeftStable=false;
+        const markAlive=()=>{
+          const ss=pc.signalingState;
+          if(ss!=="stable") sigLeftStable=true;
+          else if(sigLeftStable) finish("alive");
+        };
+        if(typeof pc.addEventListener==="function") pc.addEventListener("signalingstatechange", markAlive);
+        else pc.onsignalingstatechange=markAlive;
+        markAlive();
+      }
+    }catch(e){}
   });
   probe.on("error", err=>{
-    if(err && err.type==="peer-unavailable") finish(false);
+    if(err && err.type==="peer-unavailable") finish("dead");
   });
 }
 $("#onlCreate").addEventListener("click",()=>{
@@ -1930,6 +1961,12 @@ $("#onlJoin").addEventListener("click",()=>{
       return;
     }
     onl.hostConn=conn;
+    /* ¿El anfitrión respondió a este intento? Se detecta por
+       señalización: cuando la respuesta se aplica, el signalingState del
+       RTCPeerConnection vuelve a "stable" tras haber salido de él (un PC
+       recién creado ya nace en "stable", así que solo cuenta el regreso).
+       Si respondió, la sala existe aunque ICE nunca conecte. */
+    let answered=false;
     /* Vigía ICE del intento: si el RTCPeerConnection llega a "checking"
        o "connected", la sala existe aunque el canal nunca abra. Se usa
        addEventListener para no pisar los manejadores internos de PeerJS. */
@@ -1943,14 +1980,34 @@ $("#onlJoin").addEventListener("click",()=>{
         if(typeof pc.addEventListener==="function") pc.addEventListener("iceconnectionstatechange", markIce);
         else pc.oniceconnectionstatechange=markIce;
         markIce();
+        let sigLeftStable=false;
+        const markAnswered=()=>{
+          const ss=pc.signalingState;
+          if(ss!=="stable") sigLeftStable=true;
+          else if(sigLeftStable){ joinSawIce=true; answered=true; }
+        };
+        if(typeof pc.addEventListener==="function") pc.addEventListener("signalingstatechange", markAnswered);
+        else pc.onsignalingstatechange=markAnswered;
+        markAnswered();
       }
     }catch(e){}
     let opened=false;
     clearTimeout(onl.joinWatch);
     onl.joinWatch=setTimeout(()=>{
-      /* Vigilante por intento: ni abrió ni dio error en 6 s. */
-      if(onl.hostConn===conn){ try{ conn.close(); }catch(e){} }
-      failAttempt(conn, 0);
+      /* Vigilante por intento, en dos etapas: si a los 6 s el anfitrión
+         NO ha respondido, el intento se mata y se reintenta rápido. Si
+         SÍ respondió (la sala existe e ICE está negociando), se le dan
+         hasta 20 s en total para que el TURN asigne y DTLS complete
+         antes de matarlo y reintentar. */
+      if(answered){
+        onl.joinWatch=setTimeout(()=>{
+          if(onl.hostConn===conn){ try{ conn.close(); }catch(e){} }
+          failAttempt(conn, 0);
+        }, 14000);
+      } else {
+        if(onl.hostConn===conn){ try{ conn.close(); }catch(e){} }
+        failAttempt(conn, 0);
+      }
     }, 6000);
     conn.on("open", ()=>{
       if(onl.hostConn!==conn) return;
