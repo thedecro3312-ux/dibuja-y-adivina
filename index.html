@@ -597,6 +597,7 @@ label.flabel{display:block;font-weight:900;font-size:13px;text-transform:upperca
           </div>
         </div>
         <p class="muted" id="onlGuestSettings" style="display:none;margin:0 0 4px"></p>
+        <p class="muted" id="onlRelayNote" style="display:none;margin:0 0 4px">⚠️ Sin relé por ahora: el juego en línea solo funciona si todos están en la misma WiFi.</p>
         <p class="status-line" id="onlRoomStatus"></p>
         <div class="btn-row" style="justify-content:flex-start;margin-top:16px">
           <button class="btn btn-coral" id="onlStart" type="button">¡Empezar partida! →</button>
@@ -632,6 +633,7 @@ label.flabel{display:block;font-weight:900;font-size:13px;text-transform:upperca
       <p id="owaitText">Está eligiendo su palabra en secreto 🙈</p>
       <div class="progress-dots" id="owaitDots"></div>
       <div class="btn-row">
+        <button class="btn btn-coral" id="owaitRetry" type="button" style="display:none">🔁 Reenviar mi palabra</button>
         <button class="btn btn-ghost" id="owaitLeave" type="button">🚪 Salir de la sala</button>
       </div>
     </div>
@@ -1623,17 +1625,44 @@ $("#soloHome").addEventListener("click",()=>show("scr-home"));
    palabra, reloj, puntos y rotación de turnos viven en su dispositivo
    y se transmiten a todos. Los trazos viajan en vivo trazo a trazo. */
 const PEER_PREFIX="dibujayadivina-";
-/* ICE: la configuración por defecto de PeerJS, idéntica a la que usa el
-   emulador GBA (que sí conecta en el mismo broker y la misma red): STUN
-   de Google y el TURN propio de PeerJS como relevo. Se quitó OpenRelay:
-   eran credenciales públicas de demostración sin verificar, su URL
-   "turns:openrelay.metered.ca:443?transport=tcp" es inválida, y al
-   ponerlo se reemplazó el TURN de PeerJS, perdiendo el único relevo que
-   ha demostrado funcionar aquí. */
-const PEER_OPTS={ config:{ iceServers:[
+/* ICE: primero se intenta el relé de Cloudflare Realtime a través de un Worker propio (ver TURN_WORKER_URL): el Worker genera credenciales TURN frescas (24 h) y la página las usa para jugar entre redes distintas (WiFi + datos móviles), sin Muse y sin incrustar ninguna clave en esta página. Si el Worker no responde o no tiene secretos configurados, se usa la configuración por defecto de PeerJS (la misma del emulador GBA): STUN de Google + TURN de PeerJS como relevo (eso solo alcanza para jugar entre dispositivos en la misma WiFi, porque ese TURN no responde desde esta red). PEER_OPTS es UN SOLO objeto y nunca se reemplaza: PeerJS lee provider.options.config cuando cada conexión de datos negocia, así que al cambiar PEER_OPTS.config en caliente hasta un Peer creado antes de que llegara la respuesta usa el relé nuevo en sus conexiones siguientes; el invitado además reintenta 60 s. */
+const TURN_WORKER_URL="https://PON-TU-WORKER-AQUI.workers.dev/ice";
+const PEER_OPTS_DEFAULT={ config:{ iceServers:[
   { urls:"stun:stun.l.google.com:19302" },
   { urls:["turn:eu-0.turn.peerjs.com:3478","turn:us-0.turn.peerjs.com:3478"], username:"peerjs", credential:"peerjsp" }
 ] } };
+const PEER_OPTS={ config: PEER_OPTS_DEFAULT.config };
+let turnRelay=false;
+let turnIceSettled=false;
+let turnIceReady=null;
+function updateTurnNote(){
+  const n=$("#onlRelayNote"); if(!n) return;
+  n.style.display=(turnIceSettled && !turnRelay)?"block":"none";
+}
+function fetchTurnIce(){
+  if(turnIceReady) return turnIceReady;
+  turnIceReady=(async()=>{
+    try{
+      const ctl=new AbortController();
+      const to=setTimeout(()=>ctl.abort(), 5000);
+      let r;
+      try{ r=await fetch(TURN_WORKER_URL, {signal:ctl.signal}); }
+      finally{ clearTimeout(to); }
+      if(!r || !r.ok) return false;
+      const data=await r.json();
+      if(!data || data.ok!==true || !Array.isArray(data.iceServers) || !data.iceServers.length) return false;
+      const servers=data.iceServers.filter(s=>s && s.urls && (typeof s.urls==="string" || Array.isArray(s.urls)));
+      if(!servers.length) return false;
+      const hasStun=servers.some(s=>{ const u=Array.isArray(s.urls)?s.urls:[s.urls]; return u.some(x=>typeof x==="string" && x.indexOf("stun:")===0); });
+      PEER_OPTS.config={ iceServers: hasStun?servers:[{urls:"stun:stun.l.google.com:19302"}, ...servers] };
+      turnRelay=true;
+      return true;
+    }catch(e){ return false; }
+  })();
+  turnIceReady.then(()=>{ turnIceSettled=true; updateTurnNote(); });
+  return turnIceReady;
+}
+fetchTurnIce();
 const CAT_NAMES={todas:"🎲 De todo un poco", animales:"🐶 Animales", comida:"🍕 Comida", objetos:"🚲 Objetos y cosas", lugares:"🏖️ Lugares", acciones:"🏃 Acciones", fantasia:"🐉 Fantasía"};
 const onl={ peer:null, isHost:false, code:"", myId:"", myName:"", hostConn:null, conns:{},
   players:[], phase:"off", drawerId:"", word:"", timeTotal:90, timeLeft:0, timer:null,
@@ -1641,7 +1670,7 @@ const onl={ peer:null, isHost:false, code:"", myId:"", myName:"", hostConn:null,
   cat:"todas", usedWords:[], autoNext:null, board:null, joinTimeout:null,
   joinRetry:null, joinWatch:null,
   probeTimer:null, probePeer:null, probeActive:false, lastRereg:0,
-  lobbyTimer:null, _pendingLeave:null };
+  lobbyTimer:null, _pendingLeave:null, pendingWord:"", pickWatch:null };
 
 /* ---------- transmisión de trazos (solo actúa quien dibuja) ---------- */
 let strokePend=[], strokeLastSend=0;
@@ -2101,6 +2130,7 @@ function enterRoomUI(){
   $("#onlGuestSettings").style.display=onl.isHost?"none":"block";
   renderLobbyPlayers();
   updateLobbyStatus();
+  updateTurnNote();
   show("scr-online");
 }
 function renderLobbyPlayers(){
@@ -2129,6 +2159,7 @@ function stopOnlineTimers(){
   if(onl.dispTimer){ clearInterval(onl.dispTimer); onl.dispTimer=null; }
   clearTimeout(onl.autoNext); clearTimeout(onl.joinTimeout);
   clearTimeout(onl.joinRetry); clearTimeout(onl.joinWatch);
+  clearTimeout(onl.pickWatch); onl.pickWatch=null; onl.pendingWord="";
   clearTimeout(onl.lobbyTimer); onl.lobbyTimer=null;
   stopHostProbe();
 }
@@ -2406,18 +2437,36 @@ function uiShowPick(msg){
     b.type="button"; b.className="word-choice"; b.textContent=w;
     b.addEventListener("click",()=>{
       sfx.click();
-      if(onl.isHost) hostStartDrawing(w);
-      else if(onl.hostConn && onl.hostConn.open) onl.hostConn.send({t:"picked", word:w});
+      if(onl.isHost){ hostStartDrawing(w); return; }
+      onl.pendingWord=w;
+      if(onl.hostConn && onl.hostConn.open) onl.hostConn.send({t:"picked", word:w});
       show("scr-owait");
       $("#owaitTitle").textContent="¡A dibujar! ✏️";
       $("#owaitText").textContent="Preparando tu lienzo…";
+      armPickWatch();
     });
     box.appendChild(b);
   });
   $("#opickRound").textContent="Ronda "+msg.round+" de "+msg.rounds+" · Sala "+onl.code;
   show("scr-opick");
 }
+/* Si el invitado que dibuja no recibe el turno en 10 s, su palabra no llegó
+   al anfitrión: se le avisa y puede reenviarla sin salir de la sala. */
+function armPickWatch(){
+  clearPickWatch();
+  onl.pickWatch=setTimeout(()=>{
+    onl.pickWatch=null;
+    if(onl.phase!=="pick" || curScreen!=="scr-owait" || !onl.pendingWord) return;
+    $("#owaitText").textContent="Parece que tu palabra no llegó al anfitrión 😕 Toca «Reenviar mi palabra» para intentarlo de nuevo.";
+    $("#owaitRetry").style.display="inline-flex";
+  },10000);
+}
+function clearPickWatch(){
+  if(onl.pickWatch){ clearTimeout(onl.pickWatch); onl.pickWatch=null; }
+  const r=$("#owaitRetry"); if(r) r.style.display="none";
+}
 function uiShowWait(msg){
+  clearPickWatch();
   onl.turnIdx=msg.turnIdx; onl.totalTurns=msg.totalTurns;
   if(onl.phase!=="draw") onl.phase="pick";
   $("#owaitTitle").textContent="Turno de dibujar de "+msg.drawerName+" ✏️";
@@ -2463,6 +2512,7 @@ function updateOnlineTimerUI(){
   $("#oHudTimerFill").classList.toggle("low", onl.timeLeft<=10.5);
 }
 function uiStartTurn(msg){
+  clearPickWatch(); onl.pendingWord="";
   onl.phase="draw"; onl.over=false;
   onl.drawerId=msg.drawerId; onl.turnIdx=msg.turnIdx; onl.totalTurns=msg.totalTurns;
   onl.timeTotal=msg.timeTotal; onl.timeLeft=msg.timeTotal;
@@ -2630,6 +2680,14 @@ $("#oPodiumLeave").addEventListener("click",()=>askLeaveOnline());
 $("#oLeaveGame").addEventListener("click",()=>askLeaveOnline());
 $("#oLeaveHud").addEventListener("click",()=>askLeaveOnline());
 $("#opickLeave").addEventListener("click",()=>askLeaveOnline());
+$("#owaitRetry").addEventListener("click",()=>{
+  sfx.click();
+  if(!onl.pendingWord) return;
+  if(onl.hostConn && onl.hostConn.open) onl.hostConn.send({t:"picked", word:onl.pendingWord});
+  $("#owaitRetry").style.display="none";
+  $("#owaitText").textContent="Reenviando tu palabra…";
+  armPickWatch();
+});
 $("#owaitLeave").addEventListener("click",()=>askLeaveOnline());
 $("#orevealLeave").addEventListener("click",()=>askLeaveOnline());
 </script>
